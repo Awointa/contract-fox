@@ -3,7 +3,7 @@ use soroban_sdk::{Address, Symbol};
 /// Campaign information structure
 #[derive(Clone, Debug)]
 pub struct Campaign {
-    pub id: Symbol,
+    pub id: u64,
     pub title: Symbol,
     pub target_amount: i128,
     pub deadline: u64,
@@ -14,5 +14,6 @@ pub struct Campaign {
 pub struct Donation {
     pub donor: Address,
     pub amount: i128,
-    pub campaign_id: Symbol,
+    pub campaign_id: u64,
+    pub timestamp: u64,
 }
