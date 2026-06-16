@@ -3,6 +3,7 @@ members = [
     "contracts/donation",
     "contracts/withdrawal",
     "contracts/campaign",
+    "contracts/shared",
     "sdk",
     "worker",
 ]
