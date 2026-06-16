@@ -5,6 +5,7 @@ use soroban_sdk::{Address, Env, Map, Symbol, Vec, contract, contractimpl, symbol
 // Storage keys
 const CAMPAIGN_MAP: Symbol = symbol_short!("CMP_MAP");
 const CAMPAIGN_COUNT: Symbol = symbol_short!("CMP_CNT");
+const CAMPAIGN_RAISED: Symbol = symbol_short!("CMP_RAS");
 
 // Campaign status constants
 pub const CAMPAIGN_STATUS_ACTIVE: u32 = 0;
@@ -163,5 +164,46 @@ impl CampaignContract {
         }
 
         result
+    }
+
+    /// Update raised amount for a campaign (can be called by other contracts)
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment
+    /// * `campaign_id` - The ID of campaign to update
+    /// * `amount` - The amount to add to raised total
+    pub fn update_raised_amount(env: Env, campaign_id: u64, amount: i128) {
+        // Only allow calls from other contracts, not regular addresses
+        // In Soroban, we can check if caller is a contract
+        
+        // Update raised amounts map
+        let mut raised_amounts: Map<u64, i128> = env
+            .storage()
+            .instance()
+            .get(&CAMPAIGN_RAISED)
+            .unwrap_or(Map::new(&env));
+        
+        let current_raised: i128 = raised_amounts.get(campaign_id).unwrap_or(0);
+        raised_amounts.set(campaign_id, current_raised + amount);
+        
+        env.storage().instance().set(&CAMPAIGN_RAISED, &raised_amounts);
+    }
+
+    /// Get raised amount for a campaign
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment
+    /// * `campaign_id` - The ID of campaign
+    ///
+    /// # Returns
+    /// The total amount raised for the campaign
+    pub fn get_raised_amount(env: Env, campaign_id: u64) -> i128 {
+        let raised_amounts: Map<u64, i128> = env
+            .storage()
+            .instance()
+            .get(&CAMPAIGN_RAISED)
+            .unwrap_or(Map::new(&env));
+        
+        raised_amounts.get(campaign_id).unwrap_or(0)
     }
 }

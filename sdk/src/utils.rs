@@ -5,6 +5,15 @@ pub fn validate_amount(amount: i128) -> bool {
     amount > 0
 }
 
+/// Validate donation amount (must be positive)
+pub fn validate_donation_amount(amount: i128) -> Result<(), &'static str> {
+    if amount <= 0 {
+        Err("Donation amount must be positive")
+    } else {
+        Ok(())
+    }
+}
+
 /// Calculate fee from amount (1% default)
 pub fn calculate_fee(amount: i128) -> i128 {
     (amount * 1) / 100
@@ -24,6 +33,14 @@ mod tests {
         assert!(validate_amount(100));
         assert!(!validate_amount(0));
         assert!(!validate_amount(-100));
+    }
+
+    #[test]
+    fn test_validate_donation_amount() {
+        assert!(validate_donation_amount(100).is_ok());
+        assert!(validate_donation_amount(1).is_ok());
+        assert_eq!(validate_donation_amount(0), Err("Donation amount must be positive"));
+        assert_eq!(validate_donation_amount(-100), Err("Donation amount must be positive"));
     }
 
     #[test]
