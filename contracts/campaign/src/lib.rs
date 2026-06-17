@@ -117,7 +117,7 @@ impl CampaignContract {
         owner.require_auth();
 
         // Create updated campaign tuple
-        let updated_campaign: Campaign = (id, owner, goal, deadline, status as u32, created_at);
+        let updated_campaign: Campaign = (id, owner, goal, deadline, status, created_at);
 
         campaigns.set(campaign_id, updated_campaign);
         env.storage().instance().set(&CAMPAIGN_MAP, &campaigns);
@@ -166,15 +166,27 @@ impl CampaignContract {
         result
     }
 
-    /// Update raised amount for a campaign (can be called by other contracts)
+    /// Update raised amount for a campaign (called dynamically by authorized client contract)
     ///
     /// # Arguments
     /// * `env` - The contract environment
     /// * `campaign_id` - The ID of campaign to update
     /// * `amount` - The amount to add to raised total
     pub fn update_raised_amount(env: Env, campaign_id: u64, amount: i128) {
-        // Only allow calls from other contracts, not regular addresses
-        // In Soroban, we can check if caller is a contract
+        if amount <= 0 {
+            panic!("Amount must be positive");
+        }
+
+        // Validate the campaign target exists before updating ledger balances
+        let campaigns: Map<u64, Campaign> = env
+            .storage()
+            .instance()
+            .get(&CAMPAIGN_MAP)
+            .unwrap_or_else(|| panic!("No campaigns found"));
+            
+        if !campaigns.contains_key(campaign_id) {
+            panic!("Campaign not found");
+        }
         
         // Update raised amounts map
         let mut raised_amounts: Map<u64, i128> = env
