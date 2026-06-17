@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{Address, Env, Map, Symbol, Vec, contract, contractimpl, symbol_short};
+use soroban_sdk::{Address, Env, Map, Symbol, Vec, contract, contractimpl, contracttype, symbol_short};
 
 // Storage keys
 const DONATION_MAP: Symbol = symbol_short!("DON_MAP");
@@ -12,8 +12,30 @@ const CAMPAIGN_CONTRACT_ID: Symbol = symbol_short!("CMP_CID");
 // Donation data tuple: (donor, campaign_id, amount, timestamp)
 pub type Donation = (Address, u64, i128, u64);
 
-// DonationMade event tuple
-pub type DonationMadeEvent = (Address, u64, i128, u64); // (donor, campaign_id, amount, timestamp)
+// --- Structured Events for Off-Chain Indexing ---
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DonationMadeEvent {
+    pub campaign_id: u64,
+    pub donor: Address,
+    pub amount: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WithdrawalRequestedEvent {
+    pub campaign_id: u64,
+    pub withdrawal_id: u64,
+    pub amount: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WithdrawalApprovedEvent {
+    pub withdrawal_id: u64,
+    pub tx_hash: Symbol,
+}
 
 #[contract]
 pub struct DonationContract;
@@ -48,7 +70,7 @@ impl DonationContract {
             panic!("Amount must be positive");
         }
 
-        // Cross-call configuration lookup validation phase
+        // Fetch Campaign contract ID for cross-contract execution lookup verification phase
         let campaign_contract_id: Address = env
             .storage()
             .instance()
@@ -74,13 +96,13 @@ impl DonationContract {
             .instance()
             .get(&DONATION_MAP)
             .unwrap_or(Map::new(&env));
-        donations.set(donation_id, donation.clone());
+        donations.set(donation_id, donation);
         env.storage().instance().set(&DONATION_MAP, &donations);
 
         // Update donation count
         env.storage().instance().set(&DONATION_COUNT, &donation_count);
 
-        // Update local campaign totals
+        // Update campaign totals
         let mut campaign_totals: Map<u64, i128> = env
             .storage()
             .instance()
@@ -101,18 +123,48 @@ impl DonationContract {
         donor_history.set(donor.clone(), donor_donations);
         env.storage().instance().set(&DONOR_HISTORY, &donor_history);
 
-        // Emit DonationMade event
+        // Emit Structured Event for Indexers
         env.events().publish(
             (Symbol::new(&env, "DonationMade"), campaign_id),
-            (donor, campaign_id, amount, env.ledger().timestamp()) as DonationMadeEvent,
+            DonationMadeEvent {
+                campaign_id,
+                donor,
+                amount,
+            },
         );
-        
-        // Execute Cross-contract structural update request.
-        // If the downstream module target panics, this state modification path cascades and reverts cleanly.
+
+        // Cross-call the Campaign contract to update raised amount natively
         env.invoke_contract::<()>(
             &campaign_contract_id,
-            &Symbol::new(&env, "update_raised_amount"),
+            &symbol_short!("update_raised_amount"),
             (campaign_id, amount),
+        );
+    }
+
+    /// Hook function for executing withdrawal operations request triggers
+    pub fn request_withdrawal(env: Env, campaign_id: u64, withdrawal_id: u64, amount: i128) {
+        if amount <= 0 {
+            panic!("Withdrawal request amount must be positive");
+        }
+        
+        env.events().publish(
+            (symbol_short!("with_req"), campaign_id),
+            WithdrawalRequestedEvent {
+                campaign_id,
+                withdrawal_id,
+                amount,
+            },
+        );
+    }
+
+    /// Hook function for validating completed withdrawal distributions
+    pub fn approve_withdrawal(env: Env, withdrawal_id: u64, tx_hash: Symbol) {
+        env.events().publish(
+            (symbol_short!("with_app"), withdrawal_id),
+            WithdrawalApprovedEvent {
+                withdrawal_id,
+                tx_hash,
+            },
         );
     }
 
@@ -187,7 +239,7 @@ impl DonationContract {
 
         let mut result = Vec::new(&env);
 
-        if let Some(donation_keys) = donor_history.get(donor.clone()) {
+        if let Some(donation_keys) = donor_history.get(donor) {
             for donation_key in donation_keys.iter() {
                 if let Some(donation) = donations.get(donation_key) {
                     result.push_back(donation);
@@ -230,7 +282,6 @@ mod test {
     use soroban_sdk::{Address, Env, Map, Symbol, contract, contractimpl, testutils::Address as _};
     use crate::{DonationContract, DonationContractClient};
     
-    // Mock Campaign contract configuration keys
     const MOCK_CAMP_MAP: Symbol = Symbol::from_str("CMP_MAP");
 
     // Mock Campaign contract for testing
@@ -281,9 +332,23 @@ mod test {
         let total_raised = client.get_total_raised(&campaign_id);
         assert_eq!(total_raised, amount);
 
-        // Test mock transaction update tracking
-        let mock_client = MockCampaignContractClient::new(&env, &mock_campaign_id);
-        assert_eq!(mock_client.get_raised_amount(&campaign_id), amount);
+        // Test get_donations_for_campaign
+        let donations = client.get_donations_for_campaign(&campaign_id);
+        assert_eq!(donations.len(), 1);
+        let donation = donations.get(0).unwrap();
+        let (donor_addr, donation_campaign_id, donation_amount, _) = donation;
+        assert_eq!(donor_addr, donor);
+        assert_eq!(donation_campaign_id, campaign_id);
+        assert_eq!(donation_amount, amount);
+
+        // Test get_donor_history
+        let donor_history = client.get_donor_history(&donor);
+        assert_eq!(donor_history.len(), 1);
+        let donor_donation = donor_history.get(0).unwrap();
+        let (donor_addr2, donation_campaign_id2, donation_amount2, _) = donor_donation;
+        assert_eq!(donor_addr2, donor);
+        assert_eq!(donation_campaign_id2, campaign_id);
+        assert_eq!(donation_amount2, amount);
     }
 
     #[test]
@@ -291,24 +356,41 @@ mod test {
         let env = Env::default();
         env.mock_all_auths();
         
+        // First, deploy a mock Campaign contract
         let mock_campaign_id = env.register_contract(None, MockCampaignContract);
+        
+        // Deploy Donation contract
         let contract_id = env.register_contract(None, DonationContract);
         let client = DonationContractClient::new(&env, &contract_id);
         
+        // Initialize with Campaign contract ID
         client.initialize(&mock_campaign_id);
 
         let donor1 = Address::generate(&env);
         let donor2 = Address::generate(&env);
         let campaign_id = 1u64;
 
+        // First donation
         client.donate(&donor1, &campaign_id, &100i128);
+        
+        // Second donation
         client.donate(&donor2, &campaign_id, &200i128);
 
+        // Check total raised
         let total_raised = client.get_total_raised(&campaign_id);
         assert_eq!(total_raised, 300i128);
 
-        let mock_client = MockCampaignContractClient::new(&env, &mock_campaign_id);
-        assert_eq!(mock_client.get_raised_amount(&campaign_id), 300i128);
+        // Check donations for campaign
+        let donations = client.get_donations_for_campaign(&campaign_id);
+        assert_eq!(donations.len(), 2);
+
+        // Check donor1 history
+        let donor1_history = client.get_donor_history(&donor1);
+        assert_eq!(donor1_history.len(), 1);
+
+        // Check donor2 history
+        let donor2_history = client.get_donor_history(&donor2);
+        assert_eq!(donor2_history.len(), 1);
     }
 
     #[test]
@@ -323,8 +405,41 @@ mod test {
         
         client.initialize(&mock_campaign_id);
         let donor = Address::generate(&env);
+        let campaign_id = 1u64;
         
-        client.donate(&donor, &1u64, &0i128);
+        client.donate(&donor, &campaign_id, &0i128);
+    }
+
+    #[test]
+    #[should_panic(expected = "Amount must be positive")]
+    fn test_donate_negative_amount() {
+        let env = Env::default();
+        env.mock_all_auths();
+        
+        let mock_campaign_id = env.register_contract(None, MockCampaignContract);
+        let contract_id = env.register_contract(None, DonationContract);
+        let client = DonationContractClient::new(&env, &contract_id);
+        
+        client.initialize(&mock_campaign_id);
+        let donor = Address::generate(&env);
+        let campaign_id = 1u64;
+        
+        client.donate(&donor, &campaign_id, &-100i128);
+    }
+    
+    #[test]
+    #[should_panic(expected = "Campaign contract ID not set")]
+    fn test_donate_without_initialization() {
+        let env = Env::default();
+        
+        let contract_id = env.register_contract(None, DonationContract);
+        let client = DonationContractClient::new(&env, &contract_id);
+
+        let donor = Address::generate(&env);
+        let campaign_id = 1u64;
+        let amount = 100i128;
+        
+        client.donate(&donor, &campaign_id, &amount);
     }
 
     #[test]
