@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{Address, Env, Map, Symbol, Vec, contract, contractimpl, contracttype, symbol_short};
+use soroban_sdk::{Address, Env, IntoVal, Map, Symbol, Vec, contract, contractimpl, contracttype, symbol_short, vec};
 
 // Storage keys
 const DONATION_MAP: Symbol = symbol_short!("DON_MAP");
@@ -136,8 +136,12 @@ impl DonationContract {
         // Cross-call the Campaign contract to update raised amount natively
         env.invoke_contract::<()>(
             &campaign_contract_id,
-            &symbol_short!("update_raised_amount"),
-            (campaign_id, amount),
+            &Symbol::new(&env, "update_raised_amount"),
+            vec![
+                &env,
+                campaign_id.into_val(&env),
+                amount.into_val(&env)
+            ],
         );
     }
 
@@ -282,7 +286,7 @@ mod test {
     use soroban_sdk::{Address, Env, Map, Symbol, contract, contractimpl, testutils::Address as _};
     use crate::{DonationContract, DonationContractClient};
     
-    const MOCK_CAMP_MAP: Symbol = Symbol::from_str("CMP_MAP");
+    const MOCK_CAMP_MAP: Symbol = soroban_sdk::symbol_short!("CMP_MAP");
 
     // Mock Campaign contract for testing
     #[contract]
